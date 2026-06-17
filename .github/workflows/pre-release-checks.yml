@@ -1,0 +1,118 @@
+name: pre-release checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run maturin develop
+      - run: uv run lockknife --version
+      - run: uv run lockknife --cli --help
+      - run: uv run cargo test --workspace
+      - run: uv run cargo fmt --all --check
+      - run: uv run cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo deny check
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run ty check
+      - run: uv run pytest --cov=lockknife --cov=lockknife_headless_cli --cov-report=term-missing --cov-fail-under=56
+      - run: uv run bandit -c bandit.yaml -r lockknife lockknife_headless_cli --severity-level medium
+      - run: uv run pip-audit
+
+  build-check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: -m lockknife-core/Cargo.toml --release --out dist
+      - name: Smoke test built wheel
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import subprocess
+
+          wheel = next(Path("dist").glob("*.whl"))
+          subprocess.run(["uv", "pip", "install", "--system", str(wheel)], check=True)
+
+          exe = shutil.which("lockknife")
+          if not exe:
+              raise SystemExit("lockknife not found on PATH after wheel install")
+
+          subprocess.run([exe, "--version"], check=True)
+          subprocess.run([exe, "--cli", "--help"], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: check-wheels-${{ matrix.os }}
+          path: dist/*
+          retention-days: 3
+
+  sdist-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: -m lockknife-core/Cargo.toml --out dist
+      - name: Smoke test built sdist
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import subprocess
+
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          subprocess.run(["uv", "pip", "install", "--system", str(sdist)], check=True)
+
+          exe = shutil.which("lockknife")
+          if not exe:
+              raise SystemExit("lockknife not found on PATH after sdist install")
+
+          subprocess.run([exe, "--version"], check=True)
+          subprocess.run([exe, "--cli", "--help"], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: check-sdist
+          path: dist/*.tar.gz
+          retention-days: 3
