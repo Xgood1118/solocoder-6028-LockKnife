@@ -1,0 +1,1 @@
+增量快照检测文件变化时只看 mtime 和 size，但文件内容变了这两个字段没变就会漏掉——sha256 维度根本没比，读了一遍却当没变化跳过，该加密的不加密。另外 lineage 链每次只记到上一轮 parent，没有 base_artifact_id 传进 manifest，没法一路追溯到首次快照，artifact 家谱就断了。检查修复一下。
