@@ -50,6 +50,12 @@ from lockknife.core._case_runtime import (
     start_case_runtime_session,
     update_case_runtime_session,
 )
+from lockknife.core._case_diff import (
+    CaseDiffResult,
+    diff_cases,
+    diff_result_to_dict,
+    format_unified_diff,
+)
 from lockknife.core._case_store import CaseStore, EventRecord, is_case_workspace
 
 __all__ = [
@@ -94,4 +100,8 @@ __all__ = [
     "generate_case_chain_of_custody",
     "case_lineage_graph",
     "export_case_bundle",
+    "CaseDiffResult",
+    "diff_cases",
+    "diff_result_to_dict",
+    "format_unified_diff",
 ]

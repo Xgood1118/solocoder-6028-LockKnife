@@ -124,3 +124,58 @@ def register(case_group: Any, cli: Any) -> None:
             metadata={"entry_count": len(entries)},
         )
         cli.console.print(str(out))
+
+    @case_group.command("diff")
+    @click.option(
+        "--case-dir-a",
+        type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path),
+        required=True,
+        help="First case directory (old/baseline).",
+    )
+    @click.option(
+        "--case-dir-b",
+        type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path),
+        required=True,
+        help="Second case directory (new/target).",
+    )
+    @click.option(
+        "--format",
+        "out_format",
+        type=click.Choice(["text", "json"], case_sensitive=False),
+        default="text",
+        help="Output format: unified diff text or JSON.",
+    )
+    @click.option(
+        "--output",
+        type=click.Path(dir_okay=False, path_type=pathlib.Path),
+        default=None,
+        help="Write diff report to file instead of stdout.",
+    )
+    def diff_cmd(
+        case_dir_a: pathlib.Path,
+        case_dir_b: pathlib.Path,
+        out_format: str,
+        output: pathlib.Path | None,
+    ) -> None:
+        from lockknife.core.case import (
+            diff_cases,
+            diff_result_to_dict,
+            format_unified_diff,
+        )
+
+        result = diff_cases(case_dir_a, case_dir_b)
+        if out_format.lower() == "json":
+            payload = diff_result_to_dict(result)
+            if output:
+                cli.write_json(output, payload)
+                cli.console.print(str(output))
+            else:
+                cli.console.print_json(json.dumps(payload))
+        else:
+            text = format_unified_diff(result)
+            if output:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(text, encoding="utf-8")
+                cli.console.print(str(output))
+            else:
+                cli.console.print(text)

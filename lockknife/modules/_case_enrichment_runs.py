@@ -79,17 +79,72 @@ def _reputation_runs(
     matches: list[dict[str, Any]],
     *,
     limit: int,
+    case_dir: pathlib.Path | None = None,
 ) -> list[dict[str, Any]]:
     runs: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+
+    iocs_to_check: list[str] = []
+    ioc_kinds: dict[str, str] = {}
     for match in matches:
-        if len(runs) >= limit:
-            break
         indicator = str(match.get("ioc") or "").strip()
         kind = str(match.get("kind") or "").strip().lower()
         if not indicator or (kind, indicator) in seen:
             continue
         seen.add((kind, indicator))
+        if kind in {"domain", "ipv4", "url", "sha256"}:
+            iocs_to_check.append(indicator)
+            ioc_kinds[indicator] = kind
+
+    allowlist_hits: dict[str, dict[str, Any] | None] = {}
+    if case_dir is not None and iocs_to_check:
+        from lockknife.modules.intelligence.allowlist import batch_check_allowlist
+
+        allowlist_hits = batch_check_allowlist(case_dir, iocs_to_check)
+
+    for match in matches:
+        if len(runs) >= limit:
+            break
+        indicator = str(match.get("ioc") or "").strip()
+        kind = str(match.get("kind") or "").strip().lower()
+        if not indicator:
+            continue
+
+        hit = allowlist_hits.get(indicator) if indicator in allowlist_hits else None
+        if hit:
+            from lockknife.modules.intelligence.allowlist import record_whitelist_hit_event
+
+            if case_dir is not None:
+                record_whitelist_hit_event(
+                    case_dir,
+                    ioc=indicator,
+                    ioc_kind=kind,
+                    source_command="case enrich",
+                    artifact_id=artifact.get("artifact_id"),
+                    allowlist_entry=hit,
+                )
+            runs.append(
+                _run_entry(
+                    "intelligence.allowlist",
+                    artifact,
+                    {
+                        "indicator": indicator,
+                        "indicator_type": kind,
+                        "whitelisted": True,
+                        "allowlist_entry": hit,
+                        "summary": {
+                            "indicator": indicator,
+                            "indicator_type": kind,
+                            "whitelisted": True,
+                            "reason": hit.get("reason", ""),
+                            "source": hit.get("source", ""),
+                        },
+                        "input_paths": [str(path)],
+                    },
+                )
+            )
+            continue
+
         if kind in {"domain", "ipv4", "url", "sha256"}:
             try:
                 runs.append(

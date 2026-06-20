@@ -125,7 +125,9 @@ def run_case_enrichment(
                 _run_entry("intelligence.ioc", artifact, ioc_payload(ioc_matches, input_path=path))
             )
             if reputation_budget > 0:
-                for rep in _reputation_runs(artifact, path, ioc_matches, limit=reputation_budget):
+                for rep in _reputation_runs(
+                    artifact, path, ioc_matches, limit=reputation_budget, case_dir=case_dir
+                ):
                     runs.append(rep)
                     reputation_budget -= 1
                     if reputation_budget <= 0:

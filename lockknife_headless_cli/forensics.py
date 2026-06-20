@@ -82,6 +82,7 @@ def _parent_artifact_ids(case_dir: pathlib.Path | None, input_paths: list[str]) 
 @click.option("--full", is_flag=True, default=False)
 @click.option("--path", "paths", multiple=True)
 @click.option("--encrypt", is_flag=True, default=False)
+@click.option("--incremental", is_flag=True, default=False, help="Create an incremental snapshot based on the previous one.")
 @click.option("--output", type=click.Path(dir_okay=False, path_type=pathlib.Path))
 @click.option("--case-dir", type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path))
 @click.pass_obj
@@ -91,14 +92,46 @@ def snapshot_cmd(
     full: bool,
     paths: tuple[str, ...],
     encrypt: bool,
+    incremental: bool,
     output: pathlib.Path | None,
     case_dir: pathlib.Path | None,
 ) -> None:
+    from lockknife.modules.forensics.snapshot import (
+        create_incremental_snapshot,
+        create_snapshot,
+    )
+
     output, _derived = _resolve_forensics_output(
         output, case_dir, area="evidence", filename=f"snapshot_{serial}.tar"
     )
     if output is None:
         raise click.ClickException("Either --output or --case-dir is required")
+
+    previous_artifact_id: str | None = None
+    previous_base_artifact_id: str | None = None
+    previous_manifest_path: pathlib.Path | None = None
+    if incremental and case_dir is not None:
+        from lockknife.core.case import load_case_manifest
+        from lockknife.modules.forensics.snapshot import load_snapshot_manifest, _extract_base_artifact_id
+
+        manifest = load_case_manifest(case_dir)
+        prev_manifest_data: dict[str, Any] | None = None
+        for art in reversed(manifest.artifacts):
+            if art.category == "forensics-snapshot" and art.device_serial == serial:
+                previous_artifact_id = art.artifact_id
+                art_path = pathlib.Path(art.path)
+                if not art_path.is_absolute():
+                    art_path = case_dir / art_path
+                prev_manifest = art_path.with_suffix(art_path.suffix + ".files_manifest.json")
+                if prev_manifest.exists():
+                    previous_manifest_path = prev_manifest
+                    prev_manifest_data = load_snapshot_manifest(prev_manifest)
+                break
+        if prev_manifest_data is not None:
+            previous_base_artifact_id = _extract_base_artifact_id(prev_manifest_data, previous_artifact_id)
+        else:
+            previous_base_artifact_id = previous_artifact_id
+
     with Progress(
         SpinnerColumn(), BarColumn(), TextColumn("{task.description}"), transient=True
     ) as progress:
@@ -107,15 +140,50 @@ def snapshot_cmd(
         def _on_progress(event: dict[str, Any]) -> None:
             progress.update(task, description=str(event.get("message") or "Creating snapshot"))
 
-        out = create_snapshot(
-            app.devices,
-            serial,
-            output_path=output,
-            paths=list(paths),
-            full=full,
-            encrypt=encrypt,
-            progress_callback=_on_progress,
-        )
+        if incremental:
+            result = create_incremental_snapshot(
+                app.devices,
+                serial,
+                output_path=output,
+                paths=list(paths),
+                full=full,
+                encrypt=encrypt,
+                previous_manifest_path=previous_manifest_path,
+                parent_snapshot_artifact_id=previous_artifact_id,
+                progress_callback=_on_progress,
+            )
+            out = result["output_path"]
+            current_base_artifact_id = result.get("base_artifact_id") or previous_base_artifact_id
+            snapshot_metadata = {
+                "full": full,
+                "encrypt": encrypt,
+                "incremental": True,
+                "changed_file_count": result["changed_file_count"],
+                "unchanged_file_count": result["unchanged_file_count"],
+                "total_file_count": result["total_file_count"],
+            }
+            if previous_artifact_id:
+                snapshot_metadata["parent_snapshot_artifact_id"] = previous_artifact_id
+            if current_base_artifact_id:
+                snapshot_metadata["base_artifact_id"] = current_base_artifact_id
+        else:
+            out = create_snapshot(
+                app.devices,
+                serial,
+                output_path=output,
+                paths=list(paths),
+                full=full,
+                encrypt=encrypt,
+                progress_callback=_on_progress,
+            )
+            snapshot_metadata = {"full": full, "encrypt": encrypt}
+            current_base_artifact_id = None
+
+    parent_ids: list[str] | None = None
+    if previous_artifact_id:
+        parent_ids = [previous_artifact_id]
+        if current_base_artifact_id and current_base_artifact_id != previous_artifact_id:
+            parent_ids.append(current_base_artifact_id)
     _register_forensics_output(
         case_dir=case_dir,
         output=out,
@@ -123,7 +191,8 @@ def snapshot_cmd(
         source_command="forensics snapshot",
         device_serial=serial,
         input_paths=list(paths),
-        metadata={"full": full, "encrypt": encrypt},
+        parent_artifact_ids=parent_ids,
+        metadata=snapshot_metadata,
     )
     snapshot_artifact = find_case_artifact(case_dir, path=out) if case_dir is not None else None
     meta_path = output.with_suffix(output.suffix + ".meta.json")
@@ -136,7 +205,24 @@ def snapshot_cmd(
             device_serial=serial,
             input_paths=list(paths),
             parent_artifact_ids=[snapshot_artifact.artifact_id] if snapshot_artifact else None,
-            metadata={"full": full, "encrypt": encrypt},
+            metadata=snapshot_metadata,
+        )
+    manifest_path = output.with_suffix(output.suffix + ".files_manifest.json")
+    if manifest_path.exists():
+        files_manifest_parents: list[str] | None = None
+        if snapshot_artifact is not None:
+            files_manifest_parents = [snapshot_artifact.artifact_id]
+            if previous_artifact_id:
+                files_manifest_parents.append(previous_artifact_id)
+        _register_forensics_output(
+            case_dir=case_dir,
+            output=manifest_path,
+            category="forensics-snapshot-files-manifest",
+            source_command="forensics snapshot",
+            device_serial=serial,
+            input_paths=list(paths),
+            parent_artifact_ids=files_manifest_parents,
+            metadata=snapshot_metadata,
         )
     key_path = output.with_suffix(output.suffix + ".key")
     if key_path.exists():
@@ -148,7 +234,7 @@ def snapshot_cmd(
             device_serial=serial,
             input_paths=list(paths),
             parent_artifact_ids=[snapshot_artifact.artifact_id] if snapshot_artifact else None,
-            metadata={"full": full, "encrypt": encrypt},
+            metadata=snapshot_metadata,
         )
     console.print(str(out))
 

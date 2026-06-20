@@ -520,3 +520,94 @@ def reputation_cmd(
             console.print(str(output))
         return
     console.print_json(json.dumps(payload))
+
+
+@click.group("allowlist", help="Manage IOC allowlist for threat intelligence enrichment.")
+def allowlist_group() -> None:
+    pass
+
+
+@allowlist_group.command("add")
+@click.option("--ioc", required=True, help="The IOC value to add.")
+@click.option("--reason", default="", help="Reason for whitelisting.")
+@click.option("--source", default="", help="Source of the allowlist entry.")
+@click.option("--added-by", default="cli", help="Who added this entry.")
+@click.option("--expiry", default=None, help="Expiry timestamp (ISO-8601 format).")
+@click.option(
+    "--case-dir",
+    type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path),
+    required=True,
+    help="Case directory containing the allowlist.",
+)
+def allowlist_add_cmd(
+    ioc: str,
+    reason: str,
+    source: str,
+    added_by: str,
+    expiry: str | None,
+    case_dir: pathlib.Path,
+) -> None:
+    from lockknife.modules.intelligence.allowlist import add_ioc_to_allowlist
+
+    entry = add_ioc_to_allowlist(
+        case_dir,
+        ioc,
+        reason=reason,
+        source=source,
+        added_by=added_by,
+        expiry=expiry,
+    )
+    console.print_json(json.dumps(entry))
+
+
+@allowlist_group.command("remove")
+@click.option("--ioc", required=True, help="The IOC value to remove.")
+@click.option(
+    "--case-dir",
+    type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path),
+    required=True,
+    help="Case directory containing the allowlist.",
+)
+def allowlist_remove_cmd(ioc: str, case_dir: pathlib.Path) -> None:
+    from lockknife.modules.intelligence.allowlist import remove_ioc_from_allowlist
+
+    removed = remove_ioc_from_allowlist(case_dir, ioc)
+    console.print_json(json.dumps({"removed": removed, "ioc": ioc}))
+
+
+@allowlist_group.command("list")
+@click.option(
+    "--case-dir",
+    type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path),
+    required=True,
+    help="Case directory containing the allowlist.",
+)
+@click.option("--limit", type=int, default=100, help="Maximum entries to show.")
+def allowlist_list_cmd(case_dir: pathlib.Path, limit: int) -> None:
+    from lockknife.modules.intelligence.allowlist import load_ioc_allowlist
+
+    entries = load_ioc_allowlist(case_dir)
+    entries = entries[:limit]
+    console.print_json(json.dumps(entries))
+
+
+@allowlist_group.command("check")
+@click.option("--ioc", required=True, help="The IOC value to check.")
+@click.option(
+    "--case-dir",
+    type=click.Path(file_okay=False, exists=True, path_type=pathlib.Path),
+    required=True,
+    help="Case directory containing the allowlist.",
+)
+def allowlist_check_cmd(ioc: str, case_dir: pathlib.Path) -> None:
+    from lockknife.modules.intelligence.allowlist import is_ioc_allowed
+
+    entry = is_ioc_allowed(case_dir, ioc)
+    console.print_json(
+        json.dumps(
+            {"ioc": ioc, "allowed": entry is not None, "entry": entry if entry else None}
+        )
+    )
+
+
+intel.add_command(allowlist_group, name="allowlist")
